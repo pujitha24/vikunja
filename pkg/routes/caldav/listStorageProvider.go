@@ -285,12 +285,13 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByList(rpaths []string) (re
 }
 
 // GetResourcesByFilters fetches a project of resources with a filter
-func (vcls *VikunjaCaldavProjectStorage) GetResourcesByFilters(rpath string, _ *data.ResourceFilter) ([]data.Resource, error) {
+func (vcls *VikunjaCaldavProjectStorage) GetResourcesByFilters(rpath string, filters *data.ResourceFilter) ([]data.Resource, error) {
 
 	// If we already have a project saved, that means the user is making a REPORT request to find out if
 	// anything changed, in that case we need to return all tasks.
 	// That project is coming from a previous "getProjectRessource" in L177
 	if vcls.project.Tasks != nil {
+		applyFilters := canApplyFilters(filters)
 		var resources []data.Resource
 		for i := range vcls.project.Tasks {
 			rr := VikunjaProjectResourceAdapter{
@@ -300,6 +301,9 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByFilters(rpath string, _ *
 			}
 			r := data.NewResource(taskURL(vcls.project.ID, &vcls.project.Tasks[i].Task), &rr)
 			r.Name = vcls.project.Tasks[i].Title
+			if applyFilters && !filters.Match(&todoResource{Resource: &r}) {
+				continue
+			}
 			resources = append(resources, r)
 		}
 		return resources, nil
@@ -315,6 +319,31 @@ func (vcls *VikunjaCaldavProjectStorage) GetResourcesByFilters(rpath string, _ *
 	return []data.Resource{r}, nil
 	// For now, filtering is disabled.
 	// return vcls.GetResources(rpath, false)
+}
+
+// canApplyFilters reports whether filters are usable. caldav-go hands over an unparsed zero
+// value when the request has no (or an unparseable) <filter>, and probing that panics.
+// Time-range filters are skipped as well: caldav-go can't evaluate them against VTODOs
+// (it always answers false), so those queries keep returning every task.
+func canApplyFilters(filters *data.ResourceFilter) (ok bool) {
+	if filters == nil {
+		return false
+	}
+	defer func() {
+		if recover() != nil {
+			ok = false
+		}
+	}()
+	return filters.GetTimeRangeFilter() == nil
+}
+
+// todoResource makes caldav-go match task resources as VTODO; it hardcodes VEVENT for non-collections.
+type todoResource struct {
+	*data.Resource
+}
+
+func (todoResource) ComponentName() string {
+	return "VTODO"
 }
 
 // WebDAV requires every Depth: 1 child to live under the collection's own URI.

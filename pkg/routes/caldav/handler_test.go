@@ -156,3 +156,61 @@ func TestTaskHandlerCurrentUserPrincipal(t *testing.T) {
 	assert.Contains(t, body, principalHref(caldavFilterUser.Username))
 	assert.NotContains(t, body, principalHref(caldavOtherUser.Username))
 }
+
+func projectReport(u *user.User, filter string) (string, error) {
+	const projectID = 36
+	if filter != "" {
+		filter = "<C:filter>" + filter + "</C:filter>"
+	}
+	body := `<?xml version="1.0" encoding="utf-8" ?>
+<C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
+  <D:prop><D:getetag/></D:prop>` + filter + `
+</C:calendar-query>`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("REPORT", projectPath(projectID), strings.NewReader(body))
+	req.Header.Set("Depth", "1")
+	c := echo.New().NewContext(req, rec)
+	c.Set("userBasicAuth", u)
+	c.SetPathValues(echo.PathValues{{Name: "project", Value: strconv.FormatInt(projectID, 10)}})
+	if err := ProjectHandler(c); err != nil {
+		return "", err
+	}
+	if rec.Code != http.StatusMultiStatus {
+		return "", fmt.Errorf("REPORT answered %d: %s", rec.Code, rec.Body.String())
+	}
+	return rec.Body.String(), nil
+}
+
+func uidFilter(text string) string {
+	return `<C:comp-filter name="VCALENDAR"><C:comp-filter name="VTODO">` +
+		`<C:prop-filter name="UID"><C:text-match collation="i;octet">` + text + `</C:text-match></C:prop-filter>` +
+		`</C:comp-filter></C:comp-filter>`
+}
+
+func TestCalendarQueryUIDFilter(t *testing.T) {
+	db.LoadAndAssertFixtures(t)
+
+	t.Run("matching uid", func(t *testing.T) {
+		body, err := projectReport(caldavFilterUser, uidFilter("uid-caldav-test-parent-task-2"))
+		require.NoError(t, err)
+		assert.Contains(t, body, "uid-caldav-test-parent-task-2.ics")
+		assert.NotContains(t, body, "uid-caldav-test-child-task")
+	})
+	t.Run("unknown uid", func(t *testing.T) {
+		body, err := projectReport(caldavFilterUser, uidFilter("does-not-exist-12345"))
+		require.NoError(t, err)
+		assert.NotContains(t, body, ".ics")
+	})
+	t.Run("missing filter returns all tasks", func(t *testing.T) {
+		body, err := projectReport(caldavFilterUser, "")
+		require.NoError(t, err)
+		assert.Contains(t, body, "uid-caldav-test.ics")
+	})
+	t.Run("plain VTODO query returns all tasks", func(t *testing.T) {
+		body, err := projectReport(caldavFilterUser,
+			`<C:comp-filter name="VCALENDAR"><C:comp-filter name="VTODO"/></C:comp-filter>`)
+		require.NoError(t, err)
+		assert.Contains(t, body, "uid-caldav-test.ics")
+		assert.Contains(t, body, "uid-caldav-test-parent-task-2.ics")
+	})
+}
